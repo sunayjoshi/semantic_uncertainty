@@ -6,6 +6,9 @@ import pickle
 import numpy as np
 import wandb
 
+from sklearn.isotonic import IsotonicRegression
+from statsmodels.nonparametric.kernel_regression import KernelReg
+
 from analyze_results import analyze_run
 from uncertainty.data.data_utils import load_ds
 from uncertainty.uncertainty_measures.p_ik import get_p_ik
@@ -27,6 +30,85 @@ from uncertainty.utils import utils
 utils.setup_logger()
 
 EXP_DETAILS = 'experiment_details.pkl'
+
+
+def isotonic_recalibrator(U, A):
+    """
+    Fits a nonincreasing isotonic regression (theta_star) and a local polynomial regression (r_hat_model),
+    then returns a function that computes theta_star^{-1} ∘ r_hat_model.
+    
+    The inverse is defined as: g^{-1}(y) = sup{ x : g(x) >= y }
+    
+    Parameters:
+    U (array-like): An array of n sampled uncertainties.
+    A (array-like): A corresponding array of n sampled accuracies.
+    
+    Returns:
+    function: A function that takes uncertainty values and returns recalibrated values.
+    """
+    # Ensure U and A are numpy arrays
+    U = np.asarray(U)
+    A = np.asarray(A)
+    
+    # Sort U and A
+    sorted_indices = np.argsort(U)
+    U_sorted = U[sorted_indices]
+    A_sorted = A[sorted_indices]
+    
+    # Fit theta_star: nonincreasing isotonic regression
+    iso_reg = IsotonicRegression(increasing=False, out_of_bounds='clip')
+    theta_star_values = iso_reg.fit_transform(U_sorted, A_sorted)
+    
+    if np.sum(np.isnan(theta_star_values)) > 0:
+        raise ValueError("Isotonic regression returned NaN.")
+    
+    # Fit r_hat: local polynomial regression
+    r_hat_model = KernelReg(endog=A, exog=U, var_type='c', reg_type='ll')
+    
+    def theta_star_inverse(y):
+        """
+        Computes the generalized inverse of theta_star:
+        g^{-1}(y) = sup{ x : g(x) >= y }
+        
+        Parameters:
+        y (float or array-like): Value(s) to find the inverse for
+        
+        Returns:
+        float or array: The inverse value(s)
+        """
+        y = np.asarray(y)
+        result = np.zeros_like(y)
+        
+        for i, yi in enumerate(y.flat):
+            # Find all points where theta_star >= yi
+            valid_points = theta_star_values >= yi
+            
+            if not np.any(valid_points):
+                # If no points satisfy the condition, return the minimum U value
+                result.flat[i] = U_sorted[0]
+            else:
+                # Return the supremum of the U values where theta_star >= yi
+                result.flat[i] = U_sorted[valid_points][-1]
+        
+        return result.reshape(y.shape)
+    
+    def recalibrator_function(u):
+        """
+        Applies the recalibration function theta_star^{-1} ∘ r_hat_model
+        
+        Parameters:
+        u (float or array-like): Uncertainty value(s) to recalibrate
+        
+        Returns:
+        float or array: Recalibrated uncertainty value(s)
+        """
+        # Get r_hat predictions
+        r_hat_pred, _ = r_hat_model.fit(u)
+        
+        # Apply theta_star inverse to get recalibrated values
+        return theta_star_inverse(r_hat_pred)
+    
+    return recalibrator_function
 
 
 def main(args):
@@ -179,6 +261,40 @@ def main(args):
     def is_answerable(generation):
         return len(generation['reference']['answers']['text']) > 0
 
+    # Store training entropies and accuracies, and fit the recalibrator.
+    if args.compute_recalibrated_entropy:
+        train_semantic_entropies = []
+        train_accuracies = []
+        
+        # First pass through training data to collect entropies.
+        for tid in train_generations:
+            example = train_generations[tid]
+            full_responses = example["responses"]
+            
+            if not args.use_all_generations:
+                responses = [fr[0] for fr in full_responses[:args.use_num_generations]]
+                log_liks = [r[1] for r in full_responses[:args.use_num_generations]]
+            else:
+                responses = [fr[0] for fr in full_responses]
+                log_liks = [r[1] for r in full_responses]
+                
+            semantic_ids = get_semantic_ids(
+                responses, model=entailment_model,
+                strict_entailment=args.strict_entailment, example=example)
+                
+            log_liks_agg = [np.mean(log_lik) for log_lik in log_liks]
+            log_likelihood_per_semantic_id = logsumexp_by_id(semantic_ids, log_liks_agg, agg='sum_normalized')
+            entropy = predictive_entropy_rao(log_likelihood_per_semantic_id)
+            
+            train_semantic_entropies.append(entropy)
+            train_accuracies.append(example['most_likely_answer']['accuracy'])
+        
+        # Fit the recalibrator.
+        recalibrator = isotonic_recalibrator(
+            np.array(train_semantic_entropies), 
+            np.array(train_accuracies)
+        )
+
     # Loop over datapoints and compute validation embeddings and entropies.
     for idx, tid in enumerate(validation_generations):
 
@@ -249,6 +365,11 @@ def main(args):
             log_likelihood_per_semantic_id = logsumexp_by_id(semantic_ids, log_liks_agg, agg='sum_normalized')
             pe = predictive_entropy_rao(log_likelihood_per_semantic_id)
             entropies['semantic_entropy'].append(pe)
+
+            # Compute recalibrated entropy.
+            if args.compute_recalibrated_entropy:
+                recalibrated_pe = recalibrator(pe)
+                entropies['recalibrated_semantic_entropy'].append(recalibrated_pe)
 
             # pylint: disable=invalid-name
             log_str = 'semantic_ids: %s, avg_token_log_likelihoods: %s, entropies: %s'

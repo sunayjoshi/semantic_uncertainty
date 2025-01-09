@@ -117,6 +117,8 @@ def get_parser(stages=['generate', 'compute']):
         parser.add_argument('--num_eval_samples', type=int, default=int(1e19))
         parser.add_argument('--compute_predictive_entropy',
                             default=True, action=argparse.BooleanOptionalAction)
+        parser.add_argument('--compute_recalibrated_entropy',
+                            default=True, action=argparse.BooleanOptionalAction)
         parser.add_argument('--compute_p_ik', default=True,
                             action=argparse.BooleanOptionalAction)
         parser.add_argument('--compute_p_ik_answerable', default=False,
