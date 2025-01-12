@@ -53,57 +53,67 @@ def isotonic_recalibrator(U, A):
     # Store original U mean/stddev for destandardization
     U_mean = np.mean(U)
     U_std = np.std(U)
-    
-    # Standardize U and A
-    U_standardized = (U - U_mean) / U_std
-    A_standardized = (A - np.mean(A)) / np.std(A)
-    
-    # Sort standardized U and A
-    sorted_indices = np.argsort(U_standardized)
-    U_sorted = U_standardized[sorted_indices]
-    A_sorted = A_standardized[sorted_indices]
-    
-    # Fit theta_star: nonincreasing isotonic regression
-    iso_reg = IsotonicRegression(increasing=False, out_of_bounds='clip')
-    theta_star_values = iso_reg.fit_transform(U_sorted, A_sorted)
-    
-    if np.sum(np.isnan(theta_star_values)) > 0:
-        raise ValueError("Isotonic regression returned NaN.")
-    
-    # Fit r_hat: local polynomial regression
-    r_hat_model = KernelReg(
-        endog=A_standardized,
-        exog=U_standardized,
-        var_type='c',
-        reg_type='ll' # Consider other types?
-    )
-    
-    def theta_star_inverse(y):
-        """
-        Computes the generalized inverse of theta_star:
-        g^{-1}(y) = sup{ x : g(x) >= y }
+
+    # Store original A mean/stddev 
+    A_mean = np.mean(A)
+    A_std = np.std(A)
+
+    # We can't fit regression functions if there's no variation in the independent variable
+    if U_std != 0:
+        # Standardize U
+        U_standardized = (U - U_mean) / U_std
+
+        # Standardize A if A_std is nonzero
+        A_standardized = A
+        if A_std != 0:
+            A_standardized = (A - A_mean) / A_std 
         
-        Parameters:
-        y (float or array-like): Value(s) to find the inverse for
+        # Sort standardized U and A
+        sorted_indices = np.argsort(U_standardized)
+        U_sorted = U_standardized[sorted_indices]
+        A_sorted = A_standardized[sorted_indices]
         
-        Returns:
-        float or array: The inverse value(s)
-        """
-        y = np.asarray(y)
-        result = np.zeros_like(y)
+        # Fit theta_star: nonincreasing isotonic regression
+        iso_reg = IsotonicRegression(increasing=False, out_of_bounds='clip')
+        theta_star_values = iso_reg.fit_transform(U_sorted, A_sorted)
         
-        for i, yi in enumerate(y.flat):
-            # Find all points where theta_star >= yi
-            valid_points = theta_star_values >= yi
+        if np.sum(np.isnan(theta_star_values)) > 0:
+            raise ValueError("Isotonic regression returned NaN.")
+        
+        # Fit r_hat: local polynomial regression
+        r_hat_model = KernelReg(
+            endog=A_standardized,
+            exog=U_standardized,
+            var_type='c',
+            reg_type='ll' # Consider other types?
+        )
+    
+        def theta_star_inverse(y):
+            """
+            Computes the generalized inverse of theta_star:
+            g^{-1}(y) = sup{ x : g(x) >= y }
             
-            if not np.any(valid_points):
-                # If no points satisfy the condition, return the minimum U value
-                result.flat[i] = U_sorted[0]
-            else:
-                # Return the supremum of the U values where theta_star >= yi
-                result.flat[i] = U_sorted[valid_points][-1]
-        
-        return result.reshape(y.shape)
+            Parameters:
+            y (float or array-like): Value(s) to find the inverse for
+            
+            Returns:
+            float or array: The inverse value(s)
+            """
+            y = np.asarray(y)
+            result = np.zeros_like(y)
+            
+            for i, yi in enumerate(y.flat):
+                # Find all points where theta_star >= yi
+                valid_points = theta_star_values >= yi
+                
+                if not np.any(valid_points):
+                    # If no points satisfy the condition, return the minimum U value
+                    result.flat[i] = U_sorted[0]
+                else:
+                    # Return the supremum of the U values where theta_star >= yi
+                    result.flat[i] = U_sorted[valid_points][-1]
+            
+            return result.reshape(y.shape)
     
     def recalibrator_function(u):
         """
@@ -115,6 +125,10 @@ def isotonic_recalibrator(U, A):
         Returns:
         float or array: Recalibrated uncertainty value(s)
         """
+        # Do not perform recalibration if U_std is zero 
+        if U_std == 0:
+            return u 
+
         # Standardize input values
         u_standardized = (u - U_mean) / U_std
         
@@ -125,7 +139,9 @@ def isotonic_recalibrator(U, A):
         recalibrated_standardized = theta_star_inverse(r_hat_pred)
         
         # Destandardize the results back to original scale
-        return recalibrated_standardized * U_std + U_mean
+        u_destandardized = recalibrated_standardized * U_std + U_mean
+        
+        return u_destandardized
     
     return recalibrator_function
 
@@ -289,6 +305,10 @@ def main(args):
         for tid in train_generations:
             example = train_generations[tid]
             full_responses = example["responses"]
+
+            # Debugging U_std = 0
+            logging.info(f"Question: {example['question']}")
+            logging.info(f"Context: {example['context']}")
             
             if not args.use_all_generations:
                 responses = [fr[0] for fr in full_responses[:args.use_num_generations]]
@@ -304,10 +324,17 @@ def main(args):
             log_liks_agg = [np.mean(log_lik) for log_lik in log_liks]
             log_likelihood_per_semantic_id = logsumexp_by_id(semantic_ids, log_liks_agg, agg='sum_normalized')
             entropy = predictive_entropy_rao(log_likelihood_per_semantic_id)
+
+            # Debugging U_std = 0
+            logging.info(f"Training entropy: {entropy}")
             
             train_semantic_entropies.append(entropy)
             train_accuracies.append(example['most_likely_answer']['accuracy'])
         
+        # Debugging U_std = 0
+        entropy_std = np.std(np.asarray(train_semantic_entropies))
+        logging.info(f"Stddev of training entropies: {entropy_std}")
+
         # Fit the recalibrator.
         recalibrator = isotonic_recalibrator(
             np.array(train_semantic_entropies), 
