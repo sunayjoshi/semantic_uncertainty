@@ -50,10 +50,18 @@ def isotonic_recalibrator(U, A):
     U = np.asarray(U)
     A = np.asarray(A)
     
-    # Sort U and A
-    sorted_indices = np.argsort(U)
-    U_sorted = U[sorted_indices]
-    A_sorted = A[sorted_indices]
+    # Store original U mean/stddev for destandardization
+    U_mean = np.mean(U)
+    U_std = np.std(U)
+    
+    # Standardize U and A
+    U_standardized = (U - U_mean) / U_std
+    A_standardized = (A - np.mean(A)) / np.std(A)
+    
+    # Sort standardized U and A
+    sorted_indices = np.argsort(U_standardized)
+    U_sorted = U_standardized[sorted_indices]
+    A_sorted = A_standardized[sorted_indices]
     
     # Fit theta_star: nonincreasing isotonic regression
     iso_reg = IsotonicRegression(increasing=False, out_of_bounds='clip')
@@ -63,7 +71,12 @@ def isotonic_recalibrator(U, A):
         raise ValueError("Isotonic regression returned NaN.")
     
     # Fit r_hat: local polynomial regression
-    r_hat_model = KernelReg(endog=A, exog=U, var_type='c', reg_type='ll')
+    r_hat_model = KernelReg(
+        endog=A_standardized,
+        exog=U_standardized,
+        var_type='c',
+        reg_type='ll' # Consider other types?
+    )
     
     def theta_star_inverse(y):
         """
@@ -102,11 +115,17 @@ def isotonic_recalibrator(U, A):
         Returns:
         float or array: Recalibrated uncertainty value(s)
         """
+        # Standardize input values
+        u_standardized = (u - U_mean) / U_std
+        
         # Get r_hat predictions
-        r_hat_pred, _ = r_hat_model.fit(u)
+        r_hat_pred, _ = r_hat_model.fit(u_standardized)
         
         # Apply theta_star inverse to get recalibrated values
-        return theta_star_inverse(r_hat_pred)
+        recalibrated_standardized = theta_star_inverse(r_hat_pred)
+        
+        # Destandardize the results back to original scale
+        return recalibrated_standardized * U_std + U_mean
     
     return recalibrator_function
 
@@ -243,7 +262,7 @@ def main(args):
         logging.warning('Recompute accuracy enabled. This does not apply to precomputed p_true!')
         metric = utils.get_metric(args.metric)
 
-    # Restore outputs from `generate_answrs.py` run.
+    # Restore outputs from `generate_answers.py` run.
     result_dict_pickle = restore('uncertainty_measures.pkl')
     with open(result_dict_pickle.name, "rb") as infile:
         result_dict = pickle.load(infile)
