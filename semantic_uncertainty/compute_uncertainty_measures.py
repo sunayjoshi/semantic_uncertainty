@@ -306,9 +306,9 @@ def main(args):
             example = train_generations[tid]
             full_responses = example["responses"]
 
-            # Debugging U_std = 0
-            logging.info(f"Question: {example['question']}")
-            logging.info(f"Context: {example['context']}")
+            # # Debugging U_std = 0
+            # logging.info(f"Question: {example['question']}")
+            # logging.info(f"Context: {example['context']}")
             
             if not args.use_all_generations:
                 responses = [fr[0] for fr in full_responses[:args.use_num_generations]]
@@ -326,6 +326,12 @@ def main(args):
             entropy = predictive_entropy_rao(log_likelihood_per_semantic_id)
 
             # Debugging U_std = 0
+            logging.info(f"Number of responses: {len(responses)}")
+            logging.info(f"Example responses: {responses[:2]}")  # First two responses
+            logging.info(f"Example log_liks: {log_liks[:2]}")   # Their log likelihoods
+            logging.info(f"Example log_liks_agg: {log_liks_agg[:2]}")  # After mean aggregation
+            logging.info(f"Example semantic_ids: {semantic_ids}")  # The semantic clustering
+            logging.info(f"Example log_likelihood_per_semantic_id: {log_likelihood_per_semantic_id}")  # After logsumexp
             logging.info(f"Training entropy: {entropy}")
             
             train_semantic_entropies.append(entropy)
