@@ -1,5 +1,5 @@
 # Fill in the wandb_id assigned to your demo run!
-wandb_id = 'cg8rjx6r' # 'YOUR_ID'
+wandb_id = 'bydbd6hl' # 'YOUR_ID'
 if wandb_id == 'YOUR_ID':
     raise ValueError('Need to provide wandb_id of demo run!')
 
@@ -53,7 +53,7 @@ def main():
     plt.gca().set_ylim(0.6, 0.8)
 
     # Save the plot
-    plt.savefig(f'./plots/uncertainty_{metric.lower()}.png', bbox_inches='tight', dpi=300)
+    plt.savefig(f'./plots/run_{wandb_id}_uncertainty_{metric.lower()}.png', bbox_inches='tight', dpi=300)
     plt.close()
 
 if __name__ == '__main__':

@@ -425,7 +425,7 @@ def main(args):
             # Compute recalibrated entropy.
             if args.compute_recalibrated_entropy:
                 logging.info(f'Type of pe: {type(pe)}')
-                recalibrated_pe = recalibrator(pe)
+                recalibrated_pe = recalibrator(pe).item()
                 logging.info(f'Type of recalibrated_pe: {type(recalibrated_pe)}')
                 entropies['recalibrated_semantic_entropy'].append(recalibrated_pe)
 
