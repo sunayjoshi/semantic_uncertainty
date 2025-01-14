@@ -166,8 +166,8 @@ def main(args):
             # We sample one low temperature answer on which we will compute the
             # accuracy and args.num_generation high temperature answers which will
             # be used to estimate the entropy variants.
-
-            if dataset_split == 'train' and args.get_training_set_generations_most_likely_only:
+            # However, we need multiple generations to fit the recalibrator.
+            if dataset_split == 'train' and args.get_training_set_generations_most_likely_only and not args.compute_recalibrated_entropy:
                 num_generations = 1
             else:
                 num_generations = args.num_generations + 1

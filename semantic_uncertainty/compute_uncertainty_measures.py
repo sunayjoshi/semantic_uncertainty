@@ -69,8 +69,8 @@ def isotonic_recalibrator(U, A):
             A_standardized = (A - A_mean) / A_std 
         
         # Sort standardized U and A
-        sorted_indices = np.argsort(U_standardized)
-        U_sorted = U_standardized[sorted_indices]
+        sorted_indices = np.argsort(U_standardized) 
+        U_sorted = U_standardized[sorted_indices] # Ensure 1D for isotonic regression
         A_sorted = A_standardized[sorted_indices]
         
         # Fit theta_star: nonincreasing isotonic regression
@@ -83,7 +83,7 @@ def isotonic_recalibrator(U, A):
         # Fit r_hat: local polynomial regression
         r_hat_model = KernelReg(
             endog=A_standardized,
-            exog=U_standardized,
+            exog=U_standardized.reshape(-1, 1), # Ensure 2D for kernel regression 
             var_type='c',
             reg_type='ll' # Consider other types?
         )
@@ -127,13 +127,23 @@ def isotonic_recalibrator(U, A):
         """
         # Do not perform recalibration if U_std is zero 
         if U_std == 0:
-            return u 
-
+            return u
+            
+        # Convert input to numpy array
+        u = np.asarray(u)
+        original_shape = u.shape
+        
+        # Ensure u is 2D array with shape (n_samples, 1)
+        if u.ndim == 0:
+            u = u.reshape(1, 1)
+        elif u.ndim == 1:
+            u = u.reshape(-1, 1)
+        
         # Standardize input values
         u_standardized = (u - U_mean) / U_std
         
         # Get r_hat predictions
-        r_hat_pred, _ = r_hat_model.fit(u_standardized)
+        r_hat_pred = r_hat_model.fit(data_predict=u_standardized)[0]
         
         # Apply theta_star inverse to get recalibrated values
         recalibrated_standardized = theta_star_inverse(r_hat_pred)
@@ -141,7 +151,8 @@ def isotonic_recalibrator(U, A):
         # Destandardize the results back to original scale
         u_destandardized = recalibrated_standardized * U_std + U_mean
         
-        return u_destandardized
+        # Return to original shape
+        return u_destandardized.reshape(original_shape) # ? 
     
     return recalibrator_function
 
@@ -305,10 +316,6 @@ def main(args):
         for tid in train_generations:
             example = train_generations[tid]
             full_responses = example["responses"]
-
-            # # Debugging U_std = 0
-            # logging.info(f"Question: {example['question']}")
-            # logging.info(f"Context: {example['context']}")
             
             if not args.use_all_generations:
                 responses = [fr[0] for fr in full_responses[:args.use_num_generations]]
@@ -325,21 +332,18 @@ def main(args):
             log_likelihood_per_semantic_id = logsumexp_by_id(semantic_ids, log_liks_agg, agg='sum_normalized')
             entropy = predictive_entropy_rao(log_likelihood_per_semantic_id)
 
-            # Debugging U_std = 0
-            logging.info(f"Number of responses: {len(responses)}")
-            logging.info(f"Example responses: {responses[:2]}")  # First two responses
-            logging.info(f"Example log_liks: {log_liks[:2]}")   # Their log likelihoods
-            logging.info(f"Example log_liks_agg: {log_liks_agg[:2]}")  # After mean aggregation
-            logging.info(f"Example semantic_ids: {semantic_ids}")  # The semantic clustering
-            logging.info(f"Example log_likelihood_per_semantic_id: {log_likelihood_per_semantic_id}")  # After logsumexp
             logging.info(f"Training entropy: {entropy}")
             
             train_semantic_entropies.append(entropy)
             train_accuracies.append(example['most_likely_answer']['accuracy'])
         
-        # Debugging U_std = 0
         entropy_std = np.std(np.asarray(train_semantic_entropies))
         logging.info(f"Stddev of training entropies: {entropy_std}")
+
+        logging.info(f"Type of train_semantic_entropies: {type(train_semantic_entropies)}")
+        logging.info(f"Shape of train_semantic_entropies: {np.asarray(train_semantic_entropies).shape}")
+        logging.info(f"Type of train_accuracies: {type(train_accuracies)}")
+        logging.info(f"Shape of train_accuracies: {np.asarray(train_accuracies).shape}")
 
         # Fit the recalibrator.
         recalibrator = isotonic_recalibrator(
@@ -420,7 +424,9 @@ def main(args):
 
             # Compute recalibrated entropy.
             if args.compute_recalibrated_entropy:
+                logging.info(f'Type of pe: {type(pe)}')
                 recalibrated_pe = recalibrator(pe)
+                logging.info(f'Type of recalibrated_pe: {type(recalibrated_pe)}')
                 entropies['recalibrated_semantic_entropy'].append(recalibrated_pe)
 
             # pylint: disable=invalid-name
