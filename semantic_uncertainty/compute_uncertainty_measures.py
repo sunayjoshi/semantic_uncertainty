@@ -5,6 +5,7 @@ import os
 import pickle
 import numpy as np
 import wandb
+import matplotlib.pyplot as plt
 
 from sklearn.isotonic import IsotonicRegression
 from statsmodels.nonparametric.kernel_regression import KernelReg
@@ -46,6 +47,7 @@ def isotonic_recalibrator(U, A):
     Returns:
     function: A function that takes uncertainty values and returns recalibrated values.
     """
+    
     # Ensure U and A are numpy arrays
     U = np.asarray(U)
     A = np.asarray(A)
@@ -70,7 +72,7 @@ def isotonic_recalibrator(U, A):
         
         # Sort standardized U and A
         sorted_indices = np.argsort(U_standardized) 
-        U_sorted = U_standardized[sorted_indices] # Ensure 1D for isotonic regression
+        U_sorted = U_standardized[sorted_indices]
         A_sorted = A_standardized[sorted_indices]
         
         # Fit theta_star: nonincreasing isotonic regression
@@ -83,15 +85,71 @@ def isotonic_recalibrator(U, A):
         # Fit r_hat: local polynomial regression
         r_hat_model = KernelReg(
             endog=A_standardized,
-            exog=U_standardized.reshape(-1, 1), # Ensure 2D for kernel regression 
+            exog=U_standardized.reshape(-1, 1),
             var_type='c',
-            reg_type='ll' # Consider other types?
+            reg_type='ll'
         )
+        
+        # Create plots directory if it doesn't exist
+        os.makedirs('./plots', exist_ok=True)
+        
+        # Create plot
+        plt.figure(figsize=(10, 6))
+        
+        # Plot original data points
+        plt.scatter(U_standardized, A_standardized, alpha=0.3, label='Training Data', color='gray')
+        
+        # Generate points for smooth curves
+        x_plot = np.linspace(U_standardized.min() - 1, U_standardized.max() + 1, 1000)
+        
+        # Plot isotonic regression
+        y_iso = iso_reg.transform(x_plot)
+        plt.plot(x_plot, y_iso, 'r-', label='Isotonic Regression', linewidth=2)
+        
+        # Plot kernel regression
+        y_kernel = r_hat_model.fit(data_predict=x_plot.reshape(-1, 1))[0]
+        plt.plot(x_plot, y_kernel, 'b-', label='Kernel Regression', linewidth=2)
+        
+        plt.xlabel('Standardized Uncertainty')
+        plt.ylabel('Standardized Accuracy')
+        plt.title('Isotonic and Kernel Regression Fits')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Save plot
+        plt.savefig('./plots/fitted_regression_curves.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        logging.info('Saved calibration plot to ./plots/fitted_regression_curves.png')
     
+        # def theta_star_inverse(y):
+        #     """
+        #     Computes the generalized inverse of theta_star:
+        #     g^{-1}(y) = sup{ x : g(x) >= y }
+            
+        #     Parameters:
+        #     y (float or array-like): Value(s) to find the inverse for
+            
+        #     Returns:
+        #     float or array: The inverse value(s)
+        #     """
+
+        #     y = np.asarray(y)
+        #     result = np.zeros_like(y)
+            
+        #     for i, yi in enumerate(y.flat):
+        #         valid_points = theta_star_values >= yi
+        #         if not np.any(valid_points):
+        #             result.flat[i] = U_sorted[0]
+        #         else:
+        #             result.flat[i] = U_sorted[valid_points][-1]
+            
+        #     return result.reshape(y.shape)
+
         def theta_star_inverse(y):
             """
             Computes the generalized inverse of theta_star:
-            g^{-1}(y) = sup{ x : g(x) >= y }
+            g^{-1}(y) = inf{ x : g(x) <= y }
             
             Parameters:
             y (float or array-like): Value(s) to find the inverse for
@@ -99,19 +157,16 @@ def isotonic_recalibrator(U, A):
             Returns:
             float or array: The inverse value(s)
             """
+            
             y = np.asarray(y)
             result = np.zeros_like(y)
             
             for i, yi in enumerate(y.flat):
-                # Find all points where theta_star >= yi
-                valid_points = theta_star_values >= yi
-                
+                valid_points = theta_star_values <= yi
                 if not np.any(valid_points):
-                    # If no points satisfy the condition, return the minimum U value
-                    result.flat[i] = U_sorted[0]
+                    result.flat[i] = U_sorted[-1]  # Changed from first to last point
                 else:
-                    # Return the supremum of the U values where theta_star >= yi
-                    result.flat[i] = U_sorted[valid_points][-1]
+                    result.flat[i] = U_sorted[valid_points][0]  # Changed from last to first valid point
             
             return result.reshape(y.shape)
     
@@ -125,34 +180,24 @@ def isotonic_recalibrator(U, A):
         Returns:
         float or array: Recalibrated uncertainty value(s)
         """
-        # Do not perform recalibration if U_std is zero 
+
         if U_std == 0:
             return u
             
-        # Convert input to numpy array
         u = np.asarray(u)
         original_shape = u.shape
         
-        # Ensure u is 2D array with shape (n_samples, 1)
         if u.ndim == 0:
             u = u.reshape(1, 1)
         elif u.ndim == 1:
             u = u.reshape(-1, 1)
         
-        # Standardize input values
         u_standardized = (u - U_mean) / U_std
-        
-        # Get r_hat predictions
         r_hat_pred = r_hat_model.fit(data_predict=u_standardized)[0]
-        
-        # Apply theta_star inverse to get recalibrated values
         recalibrated_standardized = theta_star_inverse(r_hat_pred)
-        
-        # Destandardize the results back to original scale
         u_destandardized = recalibrated_standardized * U_std + U_mean
         
-        # Return to original shape
-        return u_destandardized.reshape(original_shape) # ? 
+        return u_destandardized.reshape(original_shape)
     
     return recalibrator_function
 
