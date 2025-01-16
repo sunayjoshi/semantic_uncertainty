@@ -1,5 +1,5 @@
 # Fill in the wandb_id assigned to your demo run!
-wandb_id = 'bydbd6hl' # 'YOUR_ID'
+wandb_id = 'qq4wfsfc' # 'bydbd6hl' # 'YOUR_ID'
 if wandb_id == 'YOUR_ID':
     raise ValueError('Need to provide wandb_id of demo run!')
 
