@@ -6,9 +6,14 @@ import pickle
 import numpy as np
 import wandb
 import matplotlib.pyplot as plt
+import math 
 
 from sklearn.isotonic import IsotonicRegression
 from statsmodels.nonparametric.kernel_regression import KernelReg
+from skmisc.loess import loess
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import SplineTransformer
+from sklearn.pipeline import make_pipeline 
 
 from analyze_results import analyze_run
 from uncertainty.data.data_utils import load_ds
@@ -67,13 +72,15 @@ def isotonic_recalibrator(U, A):
 
         # Standardize A if A_std is nonzero
         A_standardized = A
-        if A_std != 0:
-            A_standardized = (A - A_mean) / A_std 
+        # if A_std != 0:
+        #     A_standardized = (A - A_mean) / A_std 
         
         # Sort standardized U and A
         sorted_indices = np.argsort(U_standardized) 
         U_sorted = U_standardized[sorted_indices]
         A_sorted = A_standardized[sorted_indices]
+
+        logging.info(f"[isotonic_recalibrator] Number of training points: {len(U_sorted)}")
         
         # Fit theta_star: nonincreasing isotonic regression
         iso_reg = IsotonicRegression(increasing=False, out_of_bounds='clip')
@@ -82,13 +89,38 @@ def isotonic_recalibrator(U, A):
         if np.sum(np.isnan(theta_star_values)) > 0:
             raise ValueError("Isotonic regression returned NaN.")
         
-        # Fit r_hat: local polynomial regression
-        r_hat_model = KernelReg(
-            endog=A_standardized,
-            exog=U_standardized.reshape(-1, 1),
-            var_type='c',
-            reg_type='ll'
+        # # Fit local polynomial regression
+        # r_hat_model = KernelReg(
+        #     endog=A_standardized,
+        #     exog=U_standardized.reshape(-1, 1),
+        #     var_type='c',
+        #     reg_type='ll'
+        # )
+
+        # # Fit LOESS model for locally quadratic fit
+        # span_value = 0.3 # Adjust?...
+        # r_hat_model = loess(
+        #     x=U_standardized,    # independent variable
+        #     y=A_standardized,    # dependent variable
+        #     span=span_value,
+        #     degree=2             # 2 => locally quadratic
+        # )
+
+        # # Fit the LOESS model
+        # r_hat_model.fit()
+
+        # Fit spline-based logistic regression 
+        # 1) Create a pipeline: SplineTransformer -> LogisticRegression
+        #    - n_knots controls how many spline basis functions we have.
+        #    - degree=3 is typical for cubic splines; you can experiment.
+        r_hat_model = make_pipeline(
+            SplineTransformer(n_knots=5, degree=3),
+            LogisticRegression()
         )
+
+        # 2) Fit the pipeline on the standardized data
+        #    U_standardized is shape (n,) => must be (n, 1) for sklearn
+        r_hat_model.fit(U_standardized.reshape(-1, 1), A_standardized)
         
         # Create plots directory if it doesn't exist
         os.makedirs('./plots', exist_ok=True)
@@ -106,9 +138,44 @@ def isotonic_recalibrator(U, A):
         y_iso = iso_reg.transform(x_plot)
         plt.plot(x_plot, y_iso, 'r-', label='Isotonic Regression', linewidth=2)
         
-        # Plot kernel regression
-        y_kernel = r_hat_model.fit(data_predict=x_plot.reshape(-1, 1))[0]
-        plt.plot(x_plot, y_kernel, 'b-', label='Kernel Regression', linewidth=2)
+        # Kernel regression predictions 
+        # y_kernel = r_hat_model.fit(data_predict=x_plot.reshape(-1, 1))[0] # KernelReg predictions 
+        # plt.plot(x_plot, y_kernel, 'b-', label='Kernel Regression', linewidth=2)
+
+        # # Locally quadratic predictions 
+        # pred_plot = r_hat_model.predict(x_plot)
+        # y_kernel = pred_plot['fit']  # 'fit' gives the fitted values
+        # plt.plot(x_plot, y_kernel, 'b-', label='Kernel Regression', linewidth=2)
+
+        # Spline-based logistic regression predictions
+        # r_hat_model.predict_proba(...) returns an array of shape (n_points, 2)
+        # [:,1] is the probability of class "1".
+        y_kernel = r_hat_model.predict_proba(x_plot.reshape(-1, 1))[:, 1]
+        plt.plot(x_plot, y_kernel, 'b-', label='Spline Logistic Regression', linewidth=2)
+
+        # Compute and plot binned estimator
+        # Use Freedman-Diaconis-based binning
+        q75, q25 = np.percentile(U_standardized, [75, 25])
+        iqr = q75 - q25
+        bin_width = 2 * iqr / (len(U_standardized) ** (1/3))
+        if bin_width <= 0:
+            bin_width = (U_standardized.max() - U_standardized.min()) / 20  # fallback
+
+        num_bins_fd = int(math.ceil((U_standardized.max() - U_standardized.min()) / bin_width))
+        logging.info(f"[isotonic_recalibrator] Freedman–Diaconis suggested num_bins: {num_bins_fd}")
+
+        num_bins = num_bins_fd # 20
+        bins = np.linspace(U_standardized.min(), U_standardized.max(), num_bins + 1)
+        bin_means_x = []
+        bin_means_y = []
+
+        for i in range(num_bins):
+            mask = (U_standardized >= bins[i]) & (U_standardized < bins[i + 1])
+            if np.sum(mask) > 0:  # Only include bin if it has points
+                bin_means_x.append((bins[i] + bins[i + 1]) / 2)  # Midpoint
+                bin_means_y.append(np.mean(A_standardized[mask]))
+
+        plt.plot(bin_means_x, bin_means_y, 'g.-', label='Binned Estimator', markersize=8)
         
         plt.xlabel('Standardized Uncertainty')
         plt.ylabel('Standardized Accuracy')
@@ -121,6 +188,20 @@ def isotonic_recalibrator(U, A):
         plt.close()
         
         logging.info('Saved calibration plot to ./plots/fitted_regression_curves.png')
+
+        # Create a second plot to visualize the density of standardized training uncertainties
+        plt.figure(figsize=(10, 6))
+        plt.hist(U_standardized, bins=30, density=True, alpha=0.7, color='blue')
+        plt.title('Density of Standardized Training Uncertainties')
+        plt.xlabel('Standardized Uncertainty')
+        plt.ylabel('Density')
+        plt.grid(True, alpha=0.3)
+
+        # Save the second plot
+        plt.savefig('./plots/standardized_uncertainty_density.png', dpi=300, bbox_inches='tight')
+        plt.close()
+
+        logging.info('Saved density plot to ./plots/standardized_uncertainty_density.png')
     
         # def theta_star_inverse(y):
         #     """
@@ -193,8 +274,18 @@ def isotonic_recalibrator(U, A):
             u = u.reshape(-1, 1)
         
         u_standardized = (u - U_mean) / U_std
-        r_hat_pred = r_hat_model.fit(data_predict=u_standardized)[0]
-        recalibrated_standardized = theta_star_inverse(r_hat_pred)
+        
+        # KernelReg predictions 
+        # pred_acc = r_hat_model.fit(data_predict=u_standardized)[0] 
+
+        # # Locally quadratic predictions 
+        # pred_standardized = r_hat_model.predict(u_standardized) 
+        # pred_acc = pred_standardized['fit']  # Extract the fitted values 
+
+        # Spline logistic regression predictions 
+        pred_acc = r_hat_model.predict_proba(u_standardized.reshape(-1, 1))[:, 1]
+
+        recalibrated_standardized = theta_star_inverse(pred_acc)
         u_destandardized = recalibrated_standardized * U_std + U_mean
         
         return u_destandardized.reshape(original_shape)
