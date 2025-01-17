@@ -9,11 +9,12 @@ import matplotlib.pyplot as plt
 import math 
 
 from sklearn.isotonic import IsotonicRegression
-from statsmodels.nonparametric.kernel_regression import KernelReg
-from skmisc.loess import loess
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import SplineTransformer
-from sklearn.pipeline import make_pipeline 
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import KBinsDiscretizer, OneHotEncoder
+from sklearn.compose import ColumnTransformer
 
 from analyze_results import analyze_run
 from uncertainty.data.data_utils import load_ds
@@ -89,39 +90,71 @@ def isotonic_recalibrator(U, A):
         if np.sum(np.isnan(theta_star_values)) > 0:
             raise ValueError("Isotonic regression returned NaN.")
         
-        # # Fit local polynomial regression
-        # r_hat_model = KernelReg(
-        #     endog=A_standardized,
-        #     exog=U_standardized.reshape(-1, 1),
-        #     var_type='c',
-        #     reg_type='ll'
-        # )
+        ## Fit piecewise-linear (-quadratic) logistic regression, using cross-validation
+        # Step 1) Build a pipeline that does:
+        #   SplineTransformer(degree=1) -> LogisticRegression
+        # Setting 'degree=1' enforces piecewise *linear* splines.
+        # Setting 'degree=2' enforces piecewise *quadratic* splines.
+        # Setting 'knots="quantile"' often helps pick good knot locations automatically,
+        #   but you can try 'uniform' or custom locations if you prefer.
+        plr_pipeline = Pipeline([
+            ('spline', SplineTransformer(degree=2, knots='quantile')), # Must use degree >= 1 # Trying quadratic, add... 
+            ('lr', LogisticRegression(max_iter=1000))
+        ])
 
-        # # Fit LOESS model for locally quadratic fit
-        # span_value = 0.3 # Adjust?...
-        # r_hat_model = loess(
-        #     x=U_standardized,    # independent variable
-        #     y=A_standardized,    # dependent variable
-        #     span=span_value,
-        #     degree=2             # 2 => locally quadratic
-        # )
+        # Step 2) Define the candidate number of knots (breakpoints).
+        #         We'll let cross-validation decide the best 'n_knots'.
+        param_grid = {
+            'spline__n_knots': [5, 10, 15, 20] #[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # Adjust range as you see fit
+        }
 
-        # # Fit the LOESS model
-        # r_hat_model.fit()
-
-        # Fit spline-based logistic regression 
-        # 1) Create a pipeline: SplineTransformer -> LogisticRegression
-        #    - n_knots controls how many spline basis functions we have.
-        #    - degree=3 is typical for cubic splines; you can experiment.
-        r_hat_model = make_pipeline(
-            SplineTransformer(n_knots=5, degree=3),
-            LogisticRegression()
+        # Step 3) Run a cross-validation search to pick the best 'n_knots'.
+        #         'scoring="neg_log_loss"' is reasonable for logistic regression,
+        #         but you can choose other scoring metrics (e.g. "roc_auc", "accuracy").
+        search = GridSearchCV(
+            estimator=plr_pipeline,
+            param_grid=param_grid,
+            scoring='neg_log_loss',
+            cv=5,             # 5-fold cross-validation
+            n_jobs=-1,        # Use all available cores (optional)
+            verbose=0         # Increase if you want more logs
         )
 
-        # 2) Fit the pipeline on the standardized data
-        #    U_standardized is shape (n,) => must be (n, 1) for sklearn
-        r_hat_model.fit(U_standardized.reshape(-1, 1), A_standardized)
+        search.fit(U_standardized.reshape(-1, 1), A_standardized)
+
+        # The best estimator from cross-validation:
+        r_hat_model = search.best_estimator_
+
+        logging.info(f"Best piecewise-linear logistic regression found with params: {search.best_params_}") # Quadratic, add... 
+
         
+        # ## Fit piecewise-constant logistic regression, using cross-validation 
+        # plr_pipeline = Pipeline([
+        #     ('binning', KBinsDiscretizer(n_bins=10, encode='onehot', strategy='quantile')),  # Initial n_bins=10
+        #     ('lr', LogisticRegression(max_iter=1000))
+        # ])
+
+        # param_grid = {
+        #     'binning__n_bins': [5, 10, 15, 20]  # Adjust based on data distribution and model complexity
+        # }
+
+        # search = GridSearchCV(
+        #     estimator=plr_pipeline,
+        #     param_grid=param_grid,
+        #     scoring='neg_log_loss',
+        #     cv=5,             # 5-fold cross-validation
+        #     n_jobs=-1,        # Use all available cores (optional)
+        #     verbose=0         # Increase if you want more logs
+        # )
+
+        # search.fit(U_standardized.reshape(-1, 1), A_standardized)
+
+        # # The best estimator from cross-validation:
+        # r_hat_model = search.best_estimator_
+
+        # logging.info(f"Best piecewise-constant logistic regression found with params: {search.best_params_}")
+
+
         # Create plots directory if it doesn't exist
         os.makedirs('./plots', exist_ok=True)
         
@@ -138,48 +171,54 @@ def isotonic_recalibrator(U, A):
         y_iso = iso_reg.transform(x_plot)
         plt.plot(x_plot, y_iso, 'r-', label='Isotonic Regression', linewidth=2)
         
-        # Kernel regression predictions 
-        # y_kernel = r_hat_model.fit(data_predict=x_plot.reshape(-1, 1))[0] # KernelReg predictions 
-        # plt.plot(x_plot, y_kernel, 'b-', label='Kernel Regression', linewidth=2)
-
-        # # Locally quadratic predictions 
-        # pred_plot = r_hat_model.predict(x_plot)
-        # y_kernel = pred_plot['fit']  # 'fit' gives the fitted values
-        # plt.plot(x_plot, y_kernel, 'b-', label='Kernel Regression', linewidth=2)
-
-        # Spline-based logistic regression predictions
+        # Piecewise-linear logistic regression predictions
         # r_hat_model.predict_proba(...) returns an array of shape (n_points, 2)
         # [:,1] is the probability of class "1".
         y_kernel = r_hat_model.predict_proba(x_plot.reshape(-1, 1))[:, 1]
-        plt.plot(x_plot, y_kernel, 'b-', label='Spline Logistic Regression', linewidth=2)
+        plt.plot(x_plot, y_kernel, 'b-', label='Piecewise-Linear Logistic Regression', linewidth=2) # Quadratic, add... 
 
-        # Compute and plot binned estimator
-        # Use Freedman-Diaconis-based binning
-        q75, q25 = np.percentile(U_standardized, [75, 25])
-        iqr = q75 - q25
-        bin_width = 2 * iqr / (len(U_standardized) ** (1/3))
-        if bin_width <= 0:
-            bin_width = (U_standardized.max() - U_standardized.min()) / 20  # fallback
+        # # Piecewise-constant logistic regression predictions
+        # y_kernel = r_hat_model.predict_proba(x_plot.reshape(-1, 1))[:, 1]
+        # plt.step(x_plot, y_kernel, where='mid', label='Piecewise-Constant Logistic Regression', linewidth=2, color='b')
 
-        num_bins_fd = int(math.ceil((U_standardized.max() - U_standardized.min()) / bin_width))
-        logging.info(f"[isotonic_recalibrator] Freedman–Diaconis suggested num_bins: {num_bins_fd}")
+        # # Compute and plot binned estimator
+        # # Use Freedman-Diaconis-based binning
+        # q25, q75 = np.percentile(U_standardized, [25, 75])
+        # iqr = q75 - q25
+        # n = len(U_standardized)
 
-        num_bins = num_bins_fd # 20
-        bins = np.linspace(U_standardized.min(), U_standardized.max(), num_bins + 1)
-        bin_means_x = []
-        bin_means_y = []
+        # if iqr < 1e-12:
+        #     iqr = U_standardized.max() - U_standardized.min()
 
-        for i in range(num_bins):
-            mask = (U_standardized >= bins[i]) & (U_standardized < bins[i + 1])
-            if np.sum(mask) > 0:  # Only include bin if it has points
-                bin_means_x.append((bins[i] + bins[i + 1]) / 2)  # Midpoint
-                bin_means_y.append(np.mean(A_standardized[mask]))
+        # # Freedman-Diaconis bin width 
+        # bin_width = 2.0 * (iqr / (n ** (1/3)))
+        # if bin_width <= 0:
+        #     bin_width = (U_standardized.max() - U_standardized.min()) / 20.0
 
-        plt.plot(bin_means_x, bin_means_y, 'g.-', label='Binned Estimator', markersize=8)
+        # # Number of segments
+        # num_segments = int(np.ceil((U_standardized.max() - U_standardized.min()) / bin_width))
+
+        # # Convert segments to number of bins. Typically bins = segments + 1
+        # num_fd = max(num_segments + 1, 2)  # at least 2
+
+        # logging.info(f"[isotonic_recalibrator] Freedman–Diaconis suggested num_bins: {num_fd}")
+
+        # num_bins = num_fd # 20
+        # bins = np.linspace(U_standardized.min(), U_standardized.max(), num_bins + 1)
+        # bin_means_x = []
+        # bin_means_y = []
+
+        # for i in range(num_bins):
+        #     mask = (U_standardized >= bins[i]) & (U_standardized < bins[i + 1])
+        #     if np.sum(mask) > 0:  # Only include bin if it has points
+        #         bin_means_x.append((bins[i] + bins[i + 1]) / 2)  # Midpoint
+        #         bin_means_y.append(np.mean(A_standardized[mask]))
+
+        # plt.plot(bin_means_x, bin_means_y, 'g.-', label='Binned Estimator', markersize=8)
         
         plt.xlabel('Standardized Uncertainty')
-        plt.ylabel('Standardized Accuracy')
-        plt.title('Isotonic and Kernel Regression Fits')
+        plt.ylabel('Accuracy')
+        plt.title('Isotonic and Logistic Regression Fits')
         plt.legend()
         plt.grid(True, alpha=0.3)
         
@@ -275,13 +314,6 @@ def isotonic_recalibrator(U, A):
         
         u_standardized = (u - U_mean) / U_std
         
-        # KernelReg predictions 
-        # pred_acc = r_hat_model.fit(data_predict=u_standardized)[0] 
-
-        # # Locally quadratic predictions 
-        # pred_standardized = r_hat_model.predict(u_standardized) 
-        # pred_acc = pred_standardized['fit']  # Extract the fitted values 
-
         # Spline logistic regression predictions 
         pred_acc = r_hat_model.predict_proba(u_standardized.reshape(-1, 1))[:, 1]
 
