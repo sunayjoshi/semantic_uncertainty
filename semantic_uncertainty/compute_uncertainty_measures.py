@@ -90,7 +90,7 @@ def isotonic_recalibrator(U, A):
         if np.sum(np.isnan(theta_star_values)) > 0:
             raise ValueError("Isotonic regression returned NaN.")
         
-        ## Fit piecewise-linear (-quadratic) logistic regression, using cross-validation
+        ## Fit piecewise-linear (-quadratic/cubic) logistic regression, using cross-validation
         # Step 1) Build a pipeline that does:
         #   SplineTransformer(degree=1) -> LogisticRegression
         # Setting 'degree=1' enforces piecewise *linear* splines.
@@ -98,14 +98,14 @@ def isotonic_recalibrator(U, A):
         # Setting 'knots="quantile"' often helps pick good knot locations automatically,
         #   but you can try 'uniform' or custom locations if you prefer.
         plr_pipeline = Pipeline([
-            ('spline', SplineTransformer(degree=2, knots='quantile')), # Must use degree >= 1 # Trying quadratic, add... 
+            ('spline', SplineTransformer(degree=3, knots='quantile')), # Must use degree >= 1 # Trying quadratic/cubic, add...
             ('lr', LogisticRegression(max_iter=1000))
         ])
 
         # Step 2) Define the candidate number of knots (breakpoints).
         #         We'll let cross-validation decide the best 'n_knots'.
         param_grid = {
-            'spline__n_knots': [5, 10, 15, 20] #[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]  # Adjust range as you see fit
+            'spline__n_knots': [5, 10, 15, 20] # [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] # Adjust range as you see fit
         }
 
         # Step 3) Run a cross-validation search to pick the best 'n_knots'.
@@ -125,7 +125,7 @@ def isotonic_recalibrator(U, A):
         # The best estimator from cross-validation:
         r_hat_model = search.best_estimator_
 
-        logging.info(f"Best piecewise-linear logistic regression found with params: {search.best_params_}") # Quadratic, add... 
+        logging.info(f"Best piecewise-linear logistic regression found with params: {search.best_params_}") # Quadratic/cubic, add... 
 
         
         # ## Fit piecewise-constant logistic regression, using cross-validation 
@@ -175,7 +175,7 @@ def isotonic_recalibrator(U, A):
         # r_hat_model.predict_proba(...) returns an array of shape (n_points, 2)
         # [:,1] is the probability of class "1".
         y_kernel = r_hat_model.predict_proba(x_plot.reshape(-1, 1))[:, 1]
-        plt.plot(x_plot, y_kernel, 'b-', label='Piecewise-Linear Logistic Regression', linewidth=2) # Quadratic, add... 
+        plt.plot(x_plot, y_kernel, 'b-', label='Piecewise-Linear Logistic Regression', linewidth=2) # Quadratic/cubic, add... 
 
         # # Piecewise-constant logistic regression predictions
         # y_kernel = r_hat_model.predict_proba(x_plot.reshape(-1, 1))[:, 1]
