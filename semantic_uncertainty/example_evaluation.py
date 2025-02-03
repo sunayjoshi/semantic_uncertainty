@@ -1,5 +1,5 @@
 # Fill in the wandb_id assigned to your demo run!
-wandb_id = 'YOUR_ID' # '7jxdj7ke' # 'kf0i33ha' # 'x1wlw3o1' # 'l5repq2v' # 'tgjvxqy5' # 'gokknvd3' # 'xi0fw660' # 'qq4wfsfc' # 'bydbd6hl' # 'YOUR_ID'
+wandb_id = 's7l9bdr5' # 'YOUR_ID' # '7jxdj7ke' # 'kf0i33ha' # 'x1wlw3o1' # 'l5repq2v' # 'tgjvxqy5' # 'gokknvd3' # 'xi0fw660' # 'qq4wfsfc' # 'bydbd6hl' # 'YOUR_ID'
 if wandb_id == 'YOUR_ID':
     raise ValueError('Need to provide wandb_id of demo run!')
 
