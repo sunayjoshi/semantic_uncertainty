@@ -1,5 +1,5 @@
 # Fill in the wandb_id assigned to your demo run!
-wandb_id = "driven-pyramid-1"  # '7jxdj7ke' # 'kf0i33ha' # 'x1wlw3o1' # 'l5repq2v' # 'tgjvxqy5' # 'gokknvd3' # 'xi0fw660' # 'qq4wfsfc' # 'bydbd6hl' # 'YOUR_ID'
+wandb_id = "ya3wiimy"  # '7jxdj7ke' # 'kf0i33ha' # 'x1wlw3o1' # 'l5repq2v' # 'tgjvxqy5' # 'gokknvd3' # 'xi0fw660' # 'qq4wfsfc' # 'bydbd6hl' # 'YOUR_ID'
 if wandb_id == "YOUR_ID":
     raise ValueError("Need to provide wandb_id of demo run!")
 
@@ -58,6 +58,7 @@ def get_uncertainty_df(metrics):
 
 def main():
     results = restore_file(wandb_id)
+    print(results)
     unc_df = get_uncertainty_df(results)
 
     # Create plots directory if it doesn't exist

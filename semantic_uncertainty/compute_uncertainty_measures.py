@@ -44,6 +44,15 @@ utils.setup_logger()
 EXP_DETAILS = "experiment_details.pkl"
 
 
+def check_and_reshape_X(X: np.ndarray) -> np.ndarray:
+    X = np.asarray(X)  # Ensure X is an array
+    if X.ndim == 0:
+        return X.reshape(1, 1)  # Scalar -> (1,1)
+    elif X.ndim == 1:
+        return X.reshape(-1, 1)  # 1D array -> (n,1)
+    return X  # Already 2D or higher
+
+
 def generalized_inverse(
     y: Union[float, np.ndarray],
     theta: Callable,
@@ -127,6 +136,7 @@ class IsotonicRecalibrator(Recalibrator):
             X (np.ndarray): The uncertainty values.
             y (np.ndarray): The accuracy values.
         """
+        X = check_and_reshape_X(X)
         self.iso_reg = IsotonicRegression(increasing=False, out_of_bounds="clip")
         self.iso_reg.fit(X, y)
 
@@ -154,6 +164,7 @@ class IsotonicRecalibrator(Recalibrator):
         Returns:
             np.ndarray: The recalibrated uncertainty values.
         """
+        X = check_and_reshape_X(X)
         r_hat = self.piecewise_constant_regressor.predict(X)
         theta_star = generalized_inverse(r_hat, self.iso_reg.predict, X)
         return theta_star
@@ -168,6 +179,7 @@ class LinearMonotonicRecalibrator(Recalibrator):
         self.n_bins = n_bins
 
     def fit(self, X: np.ndarray, y: np.ndarray):
+        X = check_and_reshape_X(X)
         self.linear_model = LinearRegression()
         # fit just a decreasing linear model from max to min
         self.linear_model.fit([np.min(X), np.max(X)], [np.max(y), np.min(y)])
@@ -186,6 +198,7 @@ class LinearMonotonicRecalibrator(Recalibrator):
         self.piecewise_constant_regressor.fit(X, y)
 
     def transform(self, X: np.ndarray) -> np.ndarray:
+        X = check_and_reshape_X(X)
         r_hat = self.piecewise_constant_regressor.predict(X)
         theta_star = generalized_inverse(r_hat, self.linear_model.predict, X)
         return theta_star
