@@ -5,5 +5,5 @@
 #SBATCH --mem=16G
 #SBATCH --gpus=1
 
-conda activate semantic_uncertainty
+# micromamba activate semantic_uncertainty
 python semantic_uncertainty/example_evaluation.py
