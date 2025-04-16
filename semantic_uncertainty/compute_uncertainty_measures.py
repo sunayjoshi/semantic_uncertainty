@@ -41,190 +41,110 @@ EXP_DETAILS = 'experiment_details.pkl'
 
 def isotonic_recalibrator(U, A):
     """
-    Fits a nonincreasing isotonic regression (theta_star) and a local polynomial regression (r_hat_model),
-    then returns a function that computes theta_star^{-1} ∘ r_hat_model.
-    
-    The inverse is defined as: g^{-1}(y) = sup{ x : g(x) >= y }
-    
-    Parameters:
-    U (array-like): An array of n sampled uncertainties.
-    A (array-like): A corresponding array of n sampled accuracies.
-    
-    Returns:
-    function: A function that takes uncertainty values and returns recalibrated values.
+    Fits a single decreasing line and a piecewise-constant regression (r_hat_model),
+    then returns a function that computes that line's inverse ∘ r_hat_model.
+
+    The inverse is defined as: g^{-1}(y) = (y - intercept) / slope, 
+    clipped to the [min(U), max(U)] range.
     """
     
     # Ensure U and A are numpy arrays
     U = np.asarray(U)
     A = np.asarray(A)
+
+    logging.info(f"[isotonic_recalibrator] Number of training points: {len(U)}")
     
-    # Store original U mean/stddev for destandardization
-    U_mean = np.mean(U)
-    U_std = np.std(U)
-
-    # Store original A mean/stddev 
-    A_mean = np.mean(A)
-    A_std = np.std(A)
-
-    # We can't fit regression functions if there's no variation in the independent variable
-    if U_std != 0:
-        # Standardize U
-        U_standardized = (U - U_mean) / U_std
-
-        # Standardize A if A_std is nonzero
-        A_standardized = A
-        # if A_std != 0:
-        #     A_standardized = (A - A_mean) / A_std 
-        
-        # Sort standardized U and A
-        sorted_indices = np.argsort(U_standardized) 
-        U_sorted = U_standardized[sorted_indices]
-        A_sorted = A_standardized[sorted_indices]
-
-        logging.info(f"[isotonic_recalibrator] Number of training points: {len(U_sorted)}")
-        
-        # Fit theta_star: nonincreasing isotonic regression
-        iso_reg = IsotonicRegression(increasing=False, out_of_bounds='clip')
-        theta_star_values = iso_reg.fit_transform(U_sorted, A_sorted)
-        
-        if np.sum(np.isnan(theta_star_values)) > 0:
-            raise ValueError("Isotonic regression returned NaN.")
-        
-        ## Fit piecewise-constant regression, using cross-validation 
-        plr_pipeline = Pipeline([
-            ('binning', KBinsDiscretizer(n_bins=10, encode='onehot', strategy='quantile')), 
-            ('regressor', LinearRegression(fit_intercept=True))
-        ])
-
-        param_grid = {
-            'binning__n_bins': [5, 10, 15, 20]  # Adjust based on data distribution and model complexity
-        }
-
-        search = GridSearchCV(
-            estimator=plr_pipeline,
-            param_grid=param_grid,
-            scoring='neg_mean_squared_error', # 'r2'
-            cv=5,             # 5-fold cross-validation
-            n_jobs=-1,        # Use all available cores (optional)
-            verbose=0         # Increase if you want more logs
-        )
-
-        search.fit(U_standardized.reshape(-1, 1), A_standardized)
-
-        # The best estimator from cross-validation:
-        r_hat_model = search.best_estimator_
-
-        logging.info(f"Best piecewise-constant regression found with params: {search.best_params_}")
-
-
-        # Create plots directory if it doesn't exist
-        os.makedirs('./plots', exist_ok=True)
-        
-        # Create plot
-        plt.figure(figsize=(10, 6))
-        
-        # Plot original data points
-        plt.scatter(U_standardized, A_standardized, alpha=0.3, label='Training Data', color='gray')
-        
-        # Generate points for smooth curves
-        x_plot = np.linspace(U_standardized.min() - 1, U_standardized.max() + 1, 1000)
-        
-        # Plot isotonic regression
-        y_iso = iso_reg.transform(x_plot)
-        plt.plot(x_plot, y_iso, 'r-', label='Isotonic Regression', linewidth=2)
-        
-        # Piecewise-constant logistic regression predictions
-        y_kernel = r_hat_model.predict(x_plot.reshape(-1, 1))
-        plt.step(x_plot, y_kernel, where='mid', label='Piecewise-Constant Regression', linewidth=2, color='b')
-        
-        plt.xlabel('Standardized Uncertainty')
-        plt.ylabel('Accuracy')
-        plt.title('Isotonic and Regression Fits')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Save plot
-        plt.savefig('./plots/fitted_regression_curves.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        logging.info('Saved calibration plot to ./plots/fitted_regression_curves.png')
-
-        # Create a second plot to visualize the density of standardized training uncertainties
-        plt.figure(figsize=(10, 6))
-        plt.hist(U_standardized, bins=30, density=True, alpha=0.7, color='blue')
-        plt.title('Density of Standardized Training Uncertainties')
-        plt.xlabel('Standardized Uncertainty')
-        plt.ylabel('Density')
-        plt.grid(True, alpha=0.3)
-
-        # Save the second plot
-        plt.savefig('./plots/standardized_uncertainty_density.png', dpi=300, bbox_inches='tight')
-        plt.close()
-
-        logging.info('Saved density plot to ./plots/standardized_uncertainty_density.png')
+    # Fit a decreasing line
+    x_min = np.min(U)
+    x_max = np.max(U)
+    y_max = np.max(A)
+    y_min = np.min(A)
     
-        # def theta_star_inverse(y):
-        #     """
-        #     Computes the generalized inverse of theta_star:
-        #     g^{-1}(y) = sup{ x : g(x) >= y }
-            
-        #     Parameters:
-        #     y (float or array-like): Value(s) to find the inverse for
-            
-        #     Returns:
-        #     float or array: The inverse value(s)
-        #     """
+    slope = (y_min - y_max) / (x_max - x_min)
+    intercept = y_max - slope * x_min
+    
+    def linear_theta_star(x):
+        return slope * x + intercept
 
-        #     y = np.asarray(y)
-        #     result = np.zeros_like(y)
-            
-        #     for i, yi in enumerate(y.flat):
-        #         valid_points = theta_star_values >= yi
-        #         if not np.any(valid_points):
-        #             result.flat[i] = U_sorted[0]
-        #         else:
-        #             result.flat[i] = U_sorted[valid_points][-1]
-            
-        #     return result.reshape(y.shape)
+    # Inverse of theta
+    def theta_star_inverse(y):
+        x = (y - intercept) / slope
+        # Clip to [x_min, x_max]
+        x = np.clip(x, x_min, x_max)
+        return x
 
-        def theta_star_inverse(y):
-            """
-            Computes the generalized inverse of theta_star:
-            g^{-1}(y) = inf{ x : g(x) <= y }
+    # Piecewise-constant regression with 10 bins 
+    plr_pipeline = Pipeline([
+        ('binning', KBinsDiscretizer(n_bins=7, encode='onehot', strategy='uniform')), # 10, 'quantile'
+        ('regressor', LinearRegression(fit_intercept=True))
+    ])
+
+    plr_pipeline.fit(U.reshape(-1, 1), A)
+    r_hat_model = plr_pipeline
+
+    # Plots 
+    os.makedirs('./plots', exist_ok=True)
+    
+    # Plot the fitted line 
+    plt.figure(figsize=(10, 6))
+    x_plot = np.linspace(U.min() - 1, U.max() + 1, 1000)
+    y_line = linear_theta_star(x_plot)
+    plt.plot(x_plot, y_line, 'r-', label='Decreasing Line', linewidth=2)
+    
+    # Plot piecewise-constant regression
+    y_kernel = r_hat_model.predict(x_plot.reshape(-1, 1))
+    plt.step(x_plot, y_kernel, where='mid', label='Piecewise-Constant Regression', linewidth=2, color='b')
+    
+    plt.xlabel('Uncertainty')
+    plt.ylabel('Accuracy')
+    plt.title('Decreasing Line + Piecewise-Constant Fit')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Compute binned average accuracy using equispaced bins
+    num_bins = 10
+    bin_edges = np.linspace(U.min(), U.max(), num_bins + 1)
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    binned_acc = []
+
+    for i in range(num_bins):
+        # For the last bin include the right edge to capture all values
+        if i == num_bins - 1:
+            mask = (U >= bin_edges[i]) & (U <= bin_edges[i + 1])
+        else:
+            mask = (U >= bin_edges[i]) & (U < bin_edges[i + 1])
             
-            Parameters:
-            y (float or array-like): Value(s) to find the inverse for
-            
-            Returns:
-            float or array: The inverse value(s)
-            """
-            
-            y = np.asarray(y)
-            result = np.zeros_like(y)
-            
-            for i, yi in enumerate(y.flat):
-                valid_points = theta_star_values <= yi
-                if not np.any(valid_points):
-                    result.flat[i] = U_sorted[-1]  # Changed from first to last point
-                else:
-                    result.flat[i] = U_sorted[valid_points][0]  # Changed from last to first valid point
-            
-            return result.reshape(y.shape)
+        if np.any(mask):
+            binned_acc.append(np.mean(A[mask]))
+        else:
+            binned_acc.append(np.nan)  # Handle empty bins if any
+
+    # Plot the binned estimate
+    plt.plot(bin_centers, binned_acc, 'o-', label='Binned Estimate (Equispaced)', color='green', linewidth=2)
+
+    plt.savefig('./plots/fitted_regression_curves.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    logging.info('Saved calibration plot to ./plots/fitted_regression_curves.png')
+
+    # Plot histogram of training U 
+    plt.figure(figsize=(10, 6))
+    plt.hist(U, bins=30, density=False, alpha=0.7, color='blue')
+    plt.title('Histogram of Training Uncertainties')
+    plt.xlabel('Uncertainty')
+    plt.ylabel('Count')
+    plt.grid(True, alpha=0.3)
+    
+    plt.savefig('./plots/uncertainty_histogram.png', dpi=300, bbox_inches='tight')
+    plt.close()
+
+    logging.info('Saved histogram to ./plots/uncertainty_histogram.png')
     
     def recalibrator_function(u):
         """
-        Applies the recalibration function theta_star^{-1} ∘ r_hat_model
-        
-        Parameters:
-        u (float or array-like): Uncertainty value(s) to recalibrate
-        
-        Returns:
-        float or array: Recalibrated uncertainty value(s)
+        Applies the recalibration function line^{-1} ∘ r_hat_model
         """
 
-        if U_std == 0:
-            return u
-            
         u = np.asarray(u)
         original_shape = u.shape
         
@@ -232,16 +152,14 @@ def isotonic_recalibrator(U, A):
             u = u.reshape(1, 1)
         elif u.ndim == 1:
             u = u.reshape(-1, 1)
+                
+        # Predicted "accuracy"
+        pred_acc = r_hat_model.predict(u)
         
-        u_standardized = (u - U_mean) / U_std
+        # Use the line-based inverse
+        u_recalibrated = theta_star_inverse(pred_acc)
         
-        # Regression predictions 
-        pred_acc = r_hat_model.predict(u_standardized.reshape(-1, 1))
-
-        recalibrated_standardized = theta_star_inverse(pred_acc)
-        u_destandardized = recalibrated_standardized * U_std + U_mean
-        
-        return u_destandardized.reshape(original_shape)
+        return u_recalibrated.reshape(original_shape)
     
     return recalibrator_function
 
