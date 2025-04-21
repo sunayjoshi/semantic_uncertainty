@@ -73,7 +73,7 @@ def isotonic_recalibrator(U, A):
         x = np.clip(x, x_min, x_max)
         return x
 
-    # Piecewise-constant regression with 10 bins 
+    # Piecewise-constant regression with uniform bins 
     plr_pipeline = Pipeline([
         ('binning', KBinsDiscretizer(n_bins=7, encode='onehot', strategy='uniform')), # 10, 'quantile'
         ('regressor', LinearRegression(fit_intercept=True))

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=code
-#SBATCH --time=00-02:00:00
+#SBATCH --time=00-12:00:00
 #SBATCH --partition=whartonstat
 #SBATCH --mem=16G
 #SBATCH --gpus=1
