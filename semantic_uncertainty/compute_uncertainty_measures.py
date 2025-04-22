@@ -6,6 +6,7 @@ import pickle
 import numpy as np
 import wandb
 import matplotlib.pyplot as plt
+import bisect
 import math 
 
 from sklearn.isotonic import IsotonicRegression
@@ -39,128 +40,110 @@ utils.setup_logger()
 EXP_DETAILS = 'experiment_details.pkl'
 
 
-def isotonic_recalibrator(U, A):
-    """
-    Fits a single decreasing line and a piecewise-constant regression (r_hat_model),
-    then returns a function that computes that line's inverse ∘ r_hat_model.
+def histogram_binning(correctness, uncertainties, num_bins=20):
+    '''
+    Compute the histogram binning for re-rank-calibration with the full dataset.
+    Input:
+        correctness: (a_1, ..., a_n) ∈ ℝⁿ 
+        uncertainties: (u_1, ..., u_n) ∈ ℝⁿ
+    Output:
+        bin_boundaries: (b_1, ..., b_{B-1}) ∈ ℝ^{B-1} the inner bin boundaries of sorted uncertainties
+        bin_correctness: (ĉ_1, ..., ĉ_B) ∈ ℝ^B the average correctness for each bin
+    '''
+    n = len(uncertainties)
+    sorted_indices = np.argsort(uncertainties)
+    sorted_correctness = correctness[sorted_indices]
+    sorted_uncertainties = uncertainties[sorted_indices]
+    bin_correctness = np.zeros(num_bins)
 
-    The inverse is defined as: g^{-1}(y) = (y - intercept) / slope, 
-    clipped to the [min(U), max(U)] range.
-    """
+    # Determine bin endpoints (indices) over the sorted uncertainties.
+    bin_endpoints = [round(ele) for ele in np.linspace(0, n, num_bins + 1)]
+    # Use the inner endpoints as bin boundaries.
+    bin_boundaries = sorted_uncertainties[bin_endpoints[1:-1]]
     
-    # Ensure U and A are numpy arrays
+    for idx_bin in range(1, num_bins + 1):
+        lo, hi = bin_endpoints[idx_bin - 1], bin_endpoints[idx_bin]
+        # Compute average correctness in each bin (if nonempty).
+        a_hat = np.mean(sorted_correctness[lo:hi]) if hi > lo else 0
+        bin_correctness[idx_bin - 1] = a_hat
+        
+    return bin_boundaries, bin_correctness
+
+def isotonic_recalibrator(U, A, num_bins=20):
+    """
+    Recalibrates uncertainty scores using histogram binning on the entire dataset.
+    
+    This function:
+       1. Converts U and A to numpy arrays.
+       2. Optionally perturbs U slightly (to break ties).
+       3. Computes the histogram binning mapping (bin boundaries and average correctness per bin)
+          from all available data.
+       4. Plots the calibration mapping (bin centers vs. binned accuracy) and the histogram of uncertainties.
+       5. Returns a recalibration function that maps any new uncertainty value to the corresponding
+          average correctness via the calibrated histogram.
+    
+    Inputs:
+      U        - Array-like of uncertainty values.
+      A        - Array-like of corresponding correctness/accuracy values.
+      num_bins - Number of histogram bins to use.
+      
+    Returns:
+      recalibrator_function - Function that takes new uncertainty values and returns the recalibrated accuracy.
+    """
     U = np.asarray(U)
     A = np.asarray(A)
-
     logging.info(f"[isotonic_recalibrator] Number of training points: {len(U)}")
     
-    # Fit a decreasing line
-    x_min = np.min(U)
-    x_max = np.max(U)
-    y_max = np.max(A)
-    y_min = np.min(A)
+    # For reproducibility and to break ties, add a small amount of noise to U.
+    np.random.seed(2024)
+    n = len(U)
+    U = U + 1e-3 * np.random.randn(n)
     
-    slope = (y_min - y_max) / (x_max - x_min)
-    intercept = y_max - slope * x_min
-    
-    def linear_theta_star(x):
-        return slope * x + intercept
-
-    # Inverse of theta
-    def theta_star_inverse(y):
-        x = (y - intercept) / slope
-        # Clip to [x_min, x_max]
-        x = np.clip(x, x_min, x_max)
-        return x
-
-    # Piecewise-constant regression with uniform bins 
-    plr_pipeline = Pipeline([
-        ('binning', KBinsDiscretizer(n_bins=7, encode='onehot', strategy='uniform')), # 10, 'quantile'
-        ('regressor', LinearRegression(fit_intercept=True))
-    ])
-
-    plr_pipeline.fit(U.reshape(-1, 1), A)
-    r_hat_model = plr_pipeline
-
-    # Plots 
-    os.makedirs('./plots', exist_ok=True)
-    
-    # Plot the fitted line 
-    plt.figure(figsize=(10, 6))
-    x_plot = np.linspace(U.min() - 1, U.max() + 1, 1000)
-    y_line = linear_theta_star(x_plot)
-    plt.plot(x_plot, y_line, 'r-', label='Decreasing Line', linewidth=2)
-    
-    # Plot piecewise-constant regression
-    y_kernel = r_hat_model.predict(x_plot.reshape(-1, 1))
-    plt.step(x_plot, y_kernel, where='mid', label='Piecewise-Constant Regression', linewidth=2, color='b')
-    
-    plt.xlabel('Uncertainty')
-    plt.ylabel('Accuracy')
-    plt.title('Decreasing Line + Piecewise-Constant Fit')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    # Compute binned average accuracy using equispaced bins
-    num_bins = 10
-    bin_edges = np.linspace(U.min(), U.max(), num_bins + 1)
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-    binned_acc = []
-
-    for i in range(num_bins):
-        # For the last bin include the right edge to capture all values
-        if i == num_bins - 1:
-            mask = (U >= bin_edges[i]) & (U <= bin_edges[i + 1])
-        else:
-            mask = (U >= bin_edges[i]) & (U < bin_edges[i + 1])
-            
-        if np.any(mask):
-            binned_acc.append(np.mean(A[mask]))
-        else:
-            binned_acc.append(np.nan)  # Handle empty bins if any
-
-    # Plot the binned estimate
-    plt.plot(bin_centers, binned_acc, 'o-', label='Binned Estimate (Equispaced)', color='green', linewidth=2)
-
-    plt.savefig('./plots/fitted_regression_curves.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    logging.info('Saved calibration plot to ./plots/fitted_regression_curves.png')
-
-    # Plot histogram of training U 
-    plt.figure(figsize=(10, 6))
-    plt.hist(U, bins=30, density=False, alpha=0.7, color='blue')
-    plt.title('Histogram of Training Uncertainties')
-    plt.xlabel('Uncertainty')
-    plt.ylabel('Count')
-    plt.grid(True, alpha=0.3)
-    
-    plt.savefig('./plots/uncertainty_histogram.png', dpi=300, bbox_inches='tight')
-    plt.close()
-
-    logging.info('Saved histogram to ./plots/uncertainty_histogram.png')
-    
+    # Compute the histogram binning mapping on the full dataset.
+    bin_boundaries, bin_correctness = histogram_binning(A, U, num_bins)
+        
     def recalibrator_function(u):
         """
-        Applies the recalibration function line^{-1} ∘ r_hat_model
+        Applies the histogram recalibration mapping to new uncertainty values.
+        
+        For each input value, this function determines the corresponding bin via binary search and returns
+        the associated average correctness calibrated from the full dataset.
         """
-
         u = np.asarray(u)
         original_shape = u.shape
-        
         if u.ndim == 0:
-            u = u.reshape(1, 1)
-        elif u.ndim == 1:
-            u = u.reshape(-1, 1)
-                
-        # Predicted "accuracy"
-        pred_acc = r_hat_model.predict(u)
-        
-        # Use the line-based inverse
-        u_recalibrated = theta_star_inverse(pred_acc)
-        
-        return u_recalibrated.reshape(original_shape)
+            u = u.reshape(1)
+        # Allocate an array for the recalibrated outputs.
+        recalibrated = np.empty_like(u)
+        for idx, x in np.ndenumerate(u):
+            # Find the appropriate bin index for x.
+            bin_idx = bisect.bisect_left(bin_boundaries, x)
+            recalibrated[idx] = bin_correctness[bin_idx]
+        return recalibrated.reshape(original_shape)
     
+    # Define a dense grid over the range of uncertainties.
+    x_plot = np.linspace(U.min(), U.max(), 1000)
+    # Evaluate the recalibration function on this grid to obtain the step-like regression function.
+    y_plot = recalibrator_function(x_plot)
+    
+    plt.figure(figsize=(10, 6))
+    plt.step(x_plot, y_plot, where='post', label='Recalibrator')
+    plt.xlabel('Uncertainty')
+    plt.ylabel('Accuracy')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+
+    # Append the wandb run id to the filename.
+    try:
+        wandb_id = wandb.run.id if wandb.run is not None else "no_wandb"
+    except Exception as e:
+        wandb_id = "no_wandb"
+    
+    filename = f'./plots/recalibrator_{wandb_id}.png'
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.close()
+    logging.info(f'Saved recalibrator plot to {filename}')
+
     return recalibrator_function
 
 
